@@ -2,6 +2,8 @@
 
 A simple, single-file drag-and-drop table seating planner. No build step required — just open `index.html` in a browser.
 
+[Use Table Planner Now!](https://cnorlander.github.io/table-planner/)
+
 ## Features
 
 - **Drag & drop** guests between tables and reorder within a table (powered by [SortableJS](https://sortablejs.github.io/Sortable/))
