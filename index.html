@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Table Planner</title>
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #f0f2f5; padding-top: 20px; }
+  h1 { text-align: center; margin-bottom: 16px; color: #333; }
+
+  .toolbar { text-align: center; margin-bottom: 20px; }
+  .toolbar button { padding: 8px 18px; font-size: 14px; cursor: pointer; border: 1px solid #aaa; border-radius: 6px; background: #fff; }
+  .toolbar button:hover { background: #e8e8e8; }
+  .toolbar button.danger { background: #dc2626; color: #fff; border-color: #dc2626; }
+  .toolbar button.danger:hover { background: #b91c1c; }
+
+  /* Settings panel */
+  .settings { display: none; max-width: 700px; margin: 0 auto 24px; background: #fff; border-radius: 10px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,.12); }
+  .settings.open { display: block; }
+  .settings label { font-weight: 600; display: block; margin-bottom: 4px; }
+  .settings textarea { width: 100%; height: 120px; font-size: 14px; padding: 8px; border-radius: 6px; border: 1px solid #ccc; resize: vertical; margin-bottom: 12px; }
+  .settings button.primary { background: #4f46e5; color: #fff; border: none; padding: 10px 24px; font-size: 15px; border-radius: 6px; cursor: pointer; }
+  .settings button.primary:hover { background: #4338ca; }
+
+  /* Layout */
+  .split { display: flex; height: calc(100vh - 160px); background: #d2d2d2;}
+  .sidebar { width: 240px; flex-shrink: 0; overflow-y: auto; }
+  .main { flex: 1; overflow-y: auto; }
+  .board { background: #ddd; padding: 20px; display: flex; flex-wrap: wrap; gap: 20px; justify-content: center; align-content: flex-start; }
+  .column { background: #fff; border-radius: 10px; width: 220px; min-height: 120px; box-shadow: 0 2px 8px rgba(0,0,0,.10); display: flex; flex-direction: column; }
+  .column.unassigned { background: none; border-radius: 0 0 0 0; box-shadow: none }
+  .sidebar .column { width: 100%; min-height: 50vh; overflow-x: hidden;}
+  .column-header { padding: 12px; font-weight: 700; font-size: 15px; border-bottom: 1px solid #eee; text-align: center; background: #fafafa; border-radius: 10px 10px 0 0; }
+  .column-header.unassigned { background: #fef3c7; border-radius: 0 0 0 0; }
+  .column-header .badge { display: inline-block; background: #4f46e5; color: #fff; font-size: 12px; min-width: 22px; padding: 2px 6px; border-radius: 999px; margin-left: 6px; text-align: center; font-weight: 600; }
+  .guest-list { flex: 1; padding: 8px; min-height: 60px; }
+  .guest { padding: 8px 10px; margin-bottom: 6px; background: #eef2ff; border-radius: 6px; cursor: grab; font-size: 14px; border: 1px solid #c7d2fe; }
+  .guest:active { cursor: grabbing; }
+  .sortable-ghost { opacity: .35; }
+
+  @media print {
+    .toolbar, .settings, .hide-on-print { display: none !important; }
+    body { background: #fff; }
+    .split { height: auto; display: block; }
+    .main { overflow: visible; }
+  }
+</style>
+</head>
+<body>
+
+<h1>🍽️ Table Planner</h1>
+
+<div class="toolbar">
+  <button onclick="document.querySelector('.settings').classList.toggle('open')">⚙️ Settings</button>
+  <button onclick="printPlan()">🖨️ Print</button>
+  <button onclick="exportPlan()">📤 Export</button>
+  <button onclick="document.getElementById('importFile').click()">📥 Import</button>
+  <input type="file" id="importFile" accept=".txt" style="display:none" onchange="importPlan(event)">
+  <button class="danger" onclick="resetAll()">🗑️ Reset</button>
+</div>
+
+<div class="settings">
+  <label for="tables">Tables (one per line)</label>
+  <textarea id="tables">Table 1
+Table 2
+Table 3</textarea>
+  <label for="guests">Guests (one per line) — <span id="guestCount">0</span> total</label>
+  <textarea id="guests" oninput="updateGuestCount()">Alice
+Bob
+Charlie
+Diana
+Eve
+Frank</textarea>
+  <button class="primary" onclick="updateGuests()">Update Guests</button>
+</div>
+
+<div class="split">
+  <div class="sidebar hide-on-print" id="sidebar"></div>
+  <div class="main">
+    <div class="board" id="board"></div>
+  </div>
+</div>
+
+<script>
+function getState() {
+  const state = {}; // tableName -> [guestName]
+  document.querySelectorAll('.column').forEach(col => {
+    const name = col.getAttribute('data-name');
+    if (name) state[name] = [...col.querySelectorAll('.guest')].map(g => g.textContent);
+  });
+  return state;
+}
+
+function updateGuests() {
+  const tables = document.getElementById('tables').value.split('\n').map(s => s.trim()).filter(Boolean);
+  const newGuests = new Set(document.getElementById('guests').value.split('\n').map(s => s.trim()).filter(Boolean));
+  const board = document.getElementById('board');
+  const oldState = getState();
+  const newTableSet = new Set(tables);
+
+  // Collect currently placed guests and their locations
+  const placed = {}; // guest -> tableName (only for tables that still exist)
+  const tableOrder = {}; // tableName -> [guests in order]
+  for (const [tbl, guests] of Object.entries(oldState)) {
+    if (tbl === 'Unassigned' || newTableSet.has(tbl)) {
+      guests.forEach(g => { if (newGuests.has(g)) placed[g] = tbl; });
+      tableOrder[tbl] = guests.filter(g => newGuests.has(g));
+    } else {
+      // Table removed — its guests go to unassigned
+      guests.forEach(g => { if (newGuests.has(g) && !placed[g]) placed[g] = 'Unassigned'; });
+      tableOrder['Unassigned'] = (tableOrder['Unassigned'] || []).concat(guests.filter(g => newGuests.has(g)));
+    }
+  }
+
+  // New guests not in any column go to Unassigned
+  const unassigned = tableOrder['Unassigned'] || [];
+  newGuests.forEach(g => { if (!placed[g]) unassigned.push(g); });
+  tableOrder['Unassigned'] = unassigned;
+
+  board.innerHTML = '';
+  const sidebar = document.getElementById('sidebar');
+  sidebar.innerHTML = '';
+
+  // Unassigned column in sidebar
+  const unCol = makeColumn('Unassigned', 'unassigned');
+  (tableOrder['Unassigned'] || []).forEach(g => unCol.querySelector('.guest-list').appendChild(makeGuest(g)));
+  sidebar.appendChild(unCol);
+
+  // Table columns
+  tables.forEach(t => {
+    const col = makeColumn(t);
+    (tableOrder[t] || []).forEach(g => col.querySelector('.guest-list').appendChild(makeGuest(g)));
+    board.appendChild(col);
+  });
+
+  // Init sortable
+  document.querySelectorAll('#sidebar .guest-list, #board .guest-list').forEach(el => {
+    new Sortable(el, { group: 'shared', animation: 150, ghostClass: 'sortable-ghost', onEnd: () => { saveState(); updateCounts(); } });
+  });
+
+  saveState();
+  updateCounts();
+  document.querySelector('.settings').classList.remove('open');
+}
+
+function updateCounts() {
+  document.querySelectorAll('.column').forEach(col => {
+    const count = col.querySelectorAll('.guest').length;
+    const badge = col.querySelector('.badge');
+    if (badge) badge.textContent = count;
+  });
+}
+
+function updateGuestCount() {
+  const count = document.getElementById('guests').value.split('\n').map(s => s.trim()).filter(Boolean).length;
+  document.getElementById('guestCount').textContent = count;
+}
+
+function saveState() {
+  const data = {
+    tables: document.getElementById('tables').value,
+    guests: document.getElementById('guests').value,
+    board: getState()
+  };
+  localStorage.setItem('tablePlanner', JSON.stringify(data));
+}
+
+function loadState() {
+  const raw = localStorage.getItem('tablePlanner');
+  if (!raw) return;
+  try {
+    const data = JSON.parse(raw);
+    document.getElementById('tables').value = data.tables || '';
+    document.getElementById('guests').value = data.guests || '';
+    if (data.board) {
+      const board = document.getElementById('board');
+      const sidebar = document.getElementById('sidebar');
+      board.innerHTML = '';
+      sidebar.innerHTML = '';
+      // Unassigned in sidebar
+      if (data.board['Unassigned']) {
+        const col = makeColumn('Unassigned', 'unassigned');
+        data.board['Unassigned'].forEach(g => col.querySelector('.guest-list').appendChild(makeGuest(g)));
+        sidebar.appendChild(col);
+      }
+      // Tables in textarea order
+      const tables = (data.tables || '').split('\n').map(s => s.trim()).filter(Boolean);
+      tables.forEach(t => {
+        const col = makeColumn(t);
+        (data.board[t] || []).forEach(g => col.querySelector('.guest-list').appendChild(makeGuest(g)));
+        board.appendChild(col);
+      });
+      document.querySelectorAll('#sidebar .guest-list, #board .guest-list').forEach(el => {
+        new Sortable(el, { group: 'shared', animation: 150, ghostClass: 'sortable-ghost', onEnd: () => { saveState(); updateCounts(); } });
+      });
+      updateCounts();
+    }
+  } catch(e) {}
+}
+
+function resetAll() {
+  if (!confirm('Clear all data and start over?')) return;
+  localStorage.removeItem('tablePlanner');
+  document.getElementById('board').innerHTML = '';
+  document.getElementById('tables').value = 'Table 1\nTable 2\nTable 3';
+  document.getElementById('guests').value = 'Alice\nBob\nCharlie\nDiana\nEve\nFrank';
+}
+
+loadState();
+updateGuestCount();
+
+function makeColumn(name, extraClass) {
+  const col = document.createElement('div');
+  col.className = 'column' + (extraClass ? ' ' + extraClass : '');
+  col.setAttribute('data-name', name);
+  col.innerHTML = `<div class="column-header ${extraClass && extraClass.includes('unassigned') ? 'unassigned' : ''}">${name} <span class="badge">0</span></div><div class="guest-list"></div>`;
+  return col;
+}
+
+function makeGuest(name) {
+  const div = document.createElement('div');
+  div.className = 'guest';
+  div.textContent = name;
+  return div;
+}
+
+function exportPlan() {
+  const state = getState();
+  const tables = document.getElementById('tables').value.split('\n').map(s => s.trim()).filter(Boolean);
+  let text = '';
+  if (state['Unassigned'] && state['Unassigned'].length) {
+    text += '== Unassigned ==\n' + state['Unassigned'].join('\n') + '\n\n';
+  }
+  tables.forEach(t => {
+    text += '== ' + t + ' ==\n';
+    if (state[t] && state[t].length) text += state[t].join('\n');
+    text += '\n\n';
+  });
+  const blob = new Blob([text.trim()], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'seating-plan.txt';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function importPlan(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function() {
+    const text = reader.result;
+    const sections = text.split(/^==\s*(.+?)\s*==$/m);
+    const board = {};
+    const tableNames = [];
+    // sections: ['', name, content, name, content, ...]
+    for (let i = 1; i < sections.length; i += 2) {
+      const name = sections[i].trim();
+      const guests = sections[i + 1].trim().split('\n').map(s => s.trim()).filter(Boolean);
+      board[name] = guests;
+      if (name !== 'Unassigned') tableNames.push(name);
+    }
+    document.getElementById('tables').value = tableNames.join('\n');
+    const allGuests = [];
+    for (const g of Object.values(board)) allGuests.push(...g);
+    document.getElementById('guests').value = allGuests.join('\n');
+    // Build board from imported data
+    const boardEl = document.getElementById('board');
+    const sidebar = document.getElementById('sidebar');
+    boardEl.innerHTML = '';
+    sidebar.innerHTML = '';
+    const unCol = makeColumn('Unassigned', 'unassigned');
+    (board['Unassigned'] || []).forEach(g => unCol.querySelector('.guest-list').appendChild(makeGuest(g)));
+    sidebar.appendChild(unCol);
+    tableNames.forEach(t => {
+      const col = makeColumn(t);
+      (board[t] || []).forEach(g => col.querySelector('.guest-list').appendChild(makeGuest(g)));
+      boardEl.appendChild(col);
+    });
+    document.querySelectorAll('#sidebar .guest-list, #board .guest-list').forEach(el => {
+      new Sortable(el, { group: 'shared', animation: 150, ghostClass: 'sortable-ghost', onEnd: () => { saveState(); updateCounts(); } });
+    });
+    saveState();
+    updateCounts();
+  };
+  reader.readAsText(file);
+  e.target.value = '';
+}
+
+function printPlan() {
+  window.print();
+}
+</script>
+</body>
+</html>
